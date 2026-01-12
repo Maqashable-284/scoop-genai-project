@@ -442,29 +442,56 @@ class ChatResponse(BaseModel):
 def parse_quick_replies(text: str) -> tuple[str, list]:
     """
     Extract quick replies from response text
-
-    Format:
+    
+    Primary format:
     [QUICK_REPLIES]
     Option 1
     Option 2
     [/QUICK_REPLIES]
+    
+    Fallback format (if primary not found):
+    **შემდეგი ნაბიჯი:**
+    - Option 1
+    - Option 2
     """
+    # Primary: Look for [QUICK_REPLIES] tag
     pattern = r'\[QUICK_REPLIES\](.*?)\[/QUICK_REPLIES\]'
     match = re.search(pattern, text, re.DOTALL)
 
-    if not match:
-        return text, []
-
-    quick_text = match.group(1).strip()
-    quick_replies = [
-        {"title": line.strip(), "payload": line.strip()}
-        for line in quick_text.split("\n")
-        if line.strip()
-    ]
-
-    clean_text = re.sub(pattern, '', text, flags=re.DOTALL).strip()
-
-    return clean_text, quick_replies
+    if match:
+        quick_text = match.group(1).strip()
+        quick_replies = [
+            {"title": line.strip(), "payload": line.strip()}
+            for line in quick_text.split("\n")
+            if line.strip()
+        ]
+        clean_text = re.sub(pattern, '', text, flags=re.DOTALL).strip()
+        return clean_text, quick_replies
+    
+    # Fallback: Look for "შემდეგი ნაბიჯი:" section with bullet points
+    fallback_pattern = r'\*?\*?შემდეგი ნაბიჯი:?\*?\*?\s*\n+((?:[-•*]\s*.+\n?)+)'
+    fallback_match = re.search(fallback_pattern, text, re.IGNORECASE)
+    
+    if fallback_match:
+        bullet_text = fallback_match.group(1).strip()
+        quick_replies = []
+        
+        for line in bullet_text.split("\n"):
+            # Remove bullet point prefix (-, •, *)
+            clean_line = re.sub(r'^[-•*]\s*', '', line.strip())
+            if clean_line:
+                quick_replies.append({
+                    "title": clean_line,
+                    "payload": clean_line
+                })
+        
+        if quick_replies:
+            # Remove the "შემდეგი ნაბიჯი:" section from display text
+            clean_text = re.sub(fallback_pattern, '', text, flags=re.IGNORECASE).strip()
+            return clean_text, quick_replies
+    
+    # No quick replies found
+    return text, []
 
 
 # =============================================================================
