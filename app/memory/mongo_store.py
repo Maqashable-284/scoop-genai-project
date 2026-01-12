@@ -330,17 +330,44 @@ class ConversationStore:
                 if hasattr(part, "text") and part.text:
                     entry["parts"].append({"text": part.text})
                 elif hasattr(part, "function_call") and part.function_call:
+                    # Handle protobuf args - convert to primitive dict
+                    args_dict = {}
+                    if part.function_call.args:
+                        try:
+                            # Try to convert MapComposite/RepeatedComposite to dict
+                            for key in part.function_call.args:
+                                val = part.function_call.args[key]
+                                # Convert to primitive types
+                                if hasattr(val, '__iter__') and not isinstance(val, (str, bytes)):
+                                    args_dict[key] = list(val)
+                                else:
+                                    args_dict[key] = val
+                        except Exception:
+                            # Fallback: stringify
+                            args_dict = {"raw": str(part.function_call.args)}
+                    
                     entry["parts"].append({
                         "function_call": {
                             "name": part.function_call.name,
-                            "args": dict(part.function_call.args) if part.function_call.args else {}
+                            "args": args_dict
                         }
                     })
                 elif hasattr(part, "function_response") and part.function_response:
+                    # Handle function response - may also have protobuf types
+                    response_data = None
+                    if part.function_response.response:
+                        try:
+                            if hasattr(part.function_response.response, 'items'):
+                                response_data = dict(part.function_response.response)
+                            else:
+                                response_data = str(part.function_response.response)
+                        except Exception:
+                            response_data = str(part.function_response.response)
+                    
                     entry["parts"].append({
                         "function_response": {
                             "name": part.function_response.name,
-                            "response": part.function_response.response
+                            "response": response_data
                         }
                     })
 
