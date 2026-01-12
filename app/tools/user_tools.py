@@ -245,13 +245,15 @@ def search_products(
                 search_term = eng
                 break
 
-        # Build MongoDB query
+        # Build MongoDB query - SECURITY: escape regex special chars
+        safe_term = re.escape(search_term)
+        safe_query = re.escape(query)
         mongo_query = {
             "$or": [
-                {"name": {"$regex": search_term, "$options": "i"}},
-                {"name_ka": {"$regex": query, "$options": "i"}},
-                {"brand": {"$regex": search_term, "$options": "i"}},
-                {"category": {"$regex": search_term, "$options": "i"}},
+                {"name": {"$regex": safe_term, "$options": "i"}},
+                {"name_ka": {"$regex": safe_query, "$options": "i"}},
+                {"brand": {"$regex": safe_term, "$options": "i"}},
+                {"category": {"$regex": safe_term, "$options": "i"}},
             ]
         }
 
@@ -432,11 +434,15 @@ async def async_search_products(
             search_term = eng
             break
 
+    # SECURITY: escape regex special chars
+    safe_term = re.escape(search_term)
+    safe_query = re.escape(query)
     mongo_query = {
         "$or": [
-            {"name": {"$regex": search_term, "$options": "i"}},
-            {"brand": {"$regex": search_term, "$options": "i"}},
-            {"category": {"$regex": search_term, "$options": "i"}},
+            {"name": {"$regex": safe_term, "$options": "i"}},
+            {"name_ka": {"$regex": safe_query, "$options": "i"}},
+            {"brand": {"$regex": safe_term, "$options": "i"}},
+            {"category": {"$regex": safe_term, "$options": "i"}},
         ]
     }
 

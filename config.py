@@ -53,6 +53,9 @@ class Settings(BaseModel):
     # Question #6: Security - Content filtering
     enable_safety_settings: bool = True
 
+    # Security: Admin token for protected endpoints
+    admin_token: Optional[str] = Field(default_factory=lambda: os.getenv("ADMIN_TOKEN"))
+
     class Config:
         env_file = ".env"
 

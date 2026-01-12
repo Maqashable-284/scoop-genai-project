@@ -50,10 +50,10 @@ SUSPICIOUS_PATTERNS = [
 ]
 
 # FastAPI
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, Depends, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
 
 # Google Generative AI
 import google.generativeai as genai
@@ -80,6 +80,13 @@ from app.tools.user_tools import (
     set_stores,
     GEMINI_TOOLS,
 )
+
+# Rate Limiting
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
+
+limiter = Limiter(key_func=get_remote_address)
 
 # =============================================================================
 # LOGGING & OBSERVABILITY
@@ -415,14 +422,25 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# CORS
+# CORS - Security: Validate configuration
+cors_origins = settings.allowed_origins.split(",")
+if "*" in cors_origins and not settings.debug:
+    logger.warning(
+        "⚠️ SECURITY: CORS allows all origins (*) in production mode! "
+        "Set ALLOWED_ORIGINS env var to restrict access."
+    )
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.allowed_origins.split(","),
+    allow_origins=cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Rate Limiting
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 
 # =============================================================================
@@ -430,8 +448,23 @@ app.add_middleware(
 # =============================================================================
 
 class ChatRequest(BaseModel):
-    user_id: str
-    message: str
+    user_id: str = Field(..., min_length=1, max_length=128)
+    message: str = Field(..., min_length=1, max_length=4000)
+
+    @field_validator('user_id')
+    @classmethod
+    def validate_user_id(cls, v: str) -> str:
+        import re
+        if not re.match(r'^[a-zA-Z0-9_-]+$', v):
+            raise ValueError('Invalid user_id format - only alphanumeric, underscore, and dash allowed')
+        return v
+
+    @field_validator('message')
+    @classmethod
+    def validate_message(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError('Message cannot be empty or whitespace only')
+        return v.strip()
 
 
 class ChatResponse(BaseModel):
@@ -442,6 +475,20 @@ class ChatResponse(BaseModel):
     carousel: Optional[dict] = None
     success: bool = True
     error: Optional[str] = None
+
+
+# =============================================================================
+# ADMIN AUTHENTICATION
+# =============================================================================
+
+async def verify_admin_token(x_admin_token: str = Header(None)) -> bool:
+    """Verify admin token for protected endpoints"""
+    if not settings.admin_token:
+        # If no admin token configured, block access entirely
+        raise HTTPException(status_code=403, detail="Admin access not configured")
+    if x_admin_token != settings.admin_token:
+        raise HTTPException(status_code=403, detail="Invalid admin token")
+    return True
 
 
 # =============================================================================
@@ -530,7 +577,8 @@ async def health():
 
 
 @app.post("/chat", response_model=ChatResponse)
-async def chat(request: ChatRequest):
+@limiter.limit(f"{settings.rate_limit_per_minute}/minute")
+async def chat(request: Request, chat_request: ChatRequest):
     """
     Main chat endpoint
 
@@ -540,18 +588,18 @@ async def chat(request: ChatRequest):
     """
     try:
         # Get or create session
-        session = await session_manager.get_or_create_session(request.user_id)
+        session = await session_manager.get_or_create_session(chat_request.user_id)
 
         # Prompt injection detection (logging only, no blocking)
-        message_lower = request.message.lower()
+        message_lower = chat_request.message.lower()
         if any(pattern in message_lower for pattern in SUSPICIOUS_PATTERNS):
-            logger.warning(f"Possible prompt injection detected: {request.message[:100]}")
+            logger.warning(f"Possible prompt injection detected: {chat_request.message[:100]}")
 
         # Send message with retry
         # ANSWER TO QUESTION #4: Error handling with retry
         response = await call_with_retry(
             session.chat.send_message_async,
-            request.message
+            chat_request.message
         )
 
         # Extract text
@@ -564,7 +612,7 @@ async def chat(request: ChatRequest):
         await session_manager.save_session(session)
 
         # Update user stats
-        await user_store.increment_stats(request.user_id)
+        await user_store.increment_stats(chat_request.user_id)
 
         return ChatResponse(
             response_text_geo=clean_text,
@@ -573,7 +621,9 @@ async def chat(request: ChatRequest):
         )
 
     except Exception as e:
-        logger.error(f"Chat error: {e}", exc_info=True)
+        # Generate error ID for log correlation
+        error_id = uuid.uuid4().hex[:8]
+        logger.error(f"Chat error [{error_id}]: {e}", exc_info=True)
 
         # Check for safety block
         error_type = type(e).__name__
@@ -587,12 +637,13 @@ async def chat(request: ChatRequest):
         return ChatResponse(
             response_text_geo="დაფიქსირდა შეცდომა. გთხოვთ სცადოთ თავიდან.",
             success=False,
-            error=str(e)
+            error=f"internal_error:{error_id}"  # Safe: only error ID, not details
         )
 
 
 @app.post("/chat/stream")
-async def chat_stream(request: ChatRequest):
+@limiter.limit(f"{settings.rate_limit_per_minute}/minute")
+async def chat_stream(request: Request, stream_request: ChatRequest):
     """
     SSE Streaming endpoint
 
@@ -609,11 +660,11 @@ async def chat_stream(request: ChatRequest):
     """
     async def generate():
         try:
-            session = await session_manager.get_or_create_session(request.user_id)
+            session = await session_manager.get_or_create_session(stream_request.user_id)
 
             # Stream response
             response = await session.chat.send_message_async(
-                request.message,
+                stream_request.message,
                 stream=True
             )
 
@@ -641,8 +692,9 @@ async def chat_stream(request: ChatRequest):
             yield "event: done\ndata: {}\n\n"
 
         except Exception as e:
-            logger.error(f"Stream error: {e}")
-            yield f"event: error\ndata: {str(e)}\n\n"
+            error_id = uuid.uuid4().hex[:8]
+            logger.error(f"Stream error [{error_id}]: {e}")
+            yield f"event: error\ndata: internal_error:{error_id}\n\n"
 
     return StreamingResponse(
         generate(),
@@ -656,14 +708,14 @@ async def chat_stream(request: ChatRequest):
 
 
 @app.post("/session/clear")
-async def clear_session(user_id: str):
-    """Clear user session"""
+async def clear_session(user_id: str, authorized: bool = Depends(verify_admin_token)):
+    """Clear user session (admin only)"""
     success = await session_manager.clear_session(user_id)
     return {"success": success, "user_id": user_id}
 
 
 @app.get("/sessions")
-async def list_sessions():
+async def list_sessions(authorized: bool = Depends(verify_admin_token)):
     """List active sessions (admin only)"""
     sessions = []
     for user_id, session in session_manager._sessions.items():
