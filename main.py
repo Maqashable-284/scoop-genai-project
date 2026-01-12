@@ -519,6 +519,10 @@ def parse_quick_replies(text: str) -> tuple[str, list]:
     - Option 1
     - Option 2
     """
+    # First: Clean up any leaked function call XML/code
+    # Gemini sometimes outputs function calls as text instead of proper API calls
+    text = clean_leaked_function_calls(text)
+    
     # Primary: Look for [QUICK_REPLIES] tag
     pattern = r'\[QUICK_REPLIES\](.*?)\[/QUICK_REPLIES\]'
     match = re.search(pattern, text, re.DOTALL)
@@ -557,6 +561,28 @@ def parse_quick_replies(text: str) -> tuple[str, list]:
     
     # No quick replies found
     return text, []
+
+
+def clean_leaked_function_calls(text: str) -> str:
+    """
+    Remove any leaked function call XML/code from Gemini response.
+    
+    Gemini sometimes outputs function calls as text instead of using
+    the proper function calling API. This cleans up those artifacts.
+    """
+    # Remove <execute_function.../> tags
+    text = re.sub(r'<execute_function[^>]*/?>', '', text, flags=re.IGNORECASE | re.DOTALL)
+    
+    # Remove print(...) statements that look like function calls
+    text = re.sub(r'print\([^)]+\)', '', text)
+    
+    # Remove any remaining XML-like function tags
+    text = re.sub(r'</?[a-z_]+[^>]*>', '', text, flags=re.IGNORECASE)
+    
+    # Clean up multiple newlines
+    text = re.sub(r'\n{3,}', '\n\n', text)
+    
+    return text.strip()
 
 
 # =============================================================================
