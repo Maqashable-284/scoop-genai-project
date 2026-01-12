@@ -29,7 +29,7 @@ class Settings(BaseModel):
     # Question #5: Rate Limits for Gemini 2.5 Flash:
     # - Free tier: 15 RPM, 1M TPM, 1500 RPD
     # - Paid tier: 2000 RPM, 4M TPM (standard), scales with billing
-    model_name: str = "gemini-2.5-flash"
+    model_name: str = "gemini-3-flash-preview"  # Testing Gemini 3 Flash
 
     # Session & Memory
     # Question #1: Memory Persistence - Session TTL
