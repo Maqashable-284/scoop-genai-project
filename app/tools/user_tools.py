@@ -145,9 +145,11 @@ def update_user_profile(
         if name is not None:
             profile_updates["name"] = name
         if allergies is not None:
-            profile_updates["allergies"] = allergies
+            # Convert Gemini protobuf list to native Python list
+            profile_updates["allergies"] = list(allergies) if hasattr(allergies, '__iter__') else [allergies]
         if goals is not None:
-            profile_updates["goals"] = goals
+            # Convert Gemini protobuf list to native Python list
+            profile_updates["goals"] = list(goals) if hasattr(goals, '__iter__') else [goals]
         if fitness_level is not None:
             profile_updates["fitness_level"] = fitness_level
 

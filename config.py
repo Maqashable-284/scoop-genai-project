@@ -47,8 +47,8 @@ class Settings(BaseModel):
     # Rate Limiting
     rate_limit_per_minute: int = 30
 
-    # CORS
-    allowed_origins: str = "*"
+    # CORS - Use env var for production restriction, default "*" for dev
+    allowed_origins: str = Field(default_factory=lambda: os.getenv("ALLOWED_ORIGINS", "*"))
 
     # Question #6: Security - Content filtering
     enable_safety_settings: bool = True

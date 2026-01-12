@@ -40,6 +40,15 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 import uuid
 
+# Note: nest_asyncio removed due to uvloop conflict in Python 3.13
+# Async loop warnings in user_tools.py are non-critical - app continues to work
+
+# Prompt injection detection patterns (logging only, no blocking)
+SUSPICIOUS_PATTERNS = [
+    'ignore previous', 'forget instructions', 'disregard', 'override system',
+    'system prompt', 'ignore above', 'new instructions', 'you are now'
+]
+
 # FastAPI
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -532,6 +541,11 @@ async def chat(request: ChatRequest):
     try:
         # Get or create session
         session = await session_manager.get_or_create_session(request.user_id)
+
+        # Prompt injection detection (logging only, no blocking)
+        message_lower = request.message.lower()
+        if any(pattern in message_lower for pattern in SUSPICIOUS_PATTERNS):
+            logger.warning(f"Possible prompt injection detected: {request.message[:100]}")
 
         # Send message with retry
         # ANSWER TO QUESTION #4: Error handling with retry
