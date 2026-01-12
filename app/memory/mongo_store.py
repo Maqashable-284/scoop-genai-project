@@ -318,6 +318,19 @@ class ConversationStore:
             ])
         ]
         """
+        def proto_to_native(obj):
+            """Recursively convert protobuf types to native Python types"""
+            if obj is None:
+                return None
+            if isinstance(obj, (str, int, float, bool)):
+                return obj
+            if hasattr(obj, 'items'):  # dict-like (MapComposite)
+                return {k: proto_to_native(v) for k, v in obj.items()}
+            if hasattr(obj, '__iter__'):  # list-like (RepeatedComposite)
+                return [proto_to_native(item) for item in obj]
+            # Fallback: convert to string
+            return str(obj)
+
         bson_history = []
 
         for content in history:
@@ -330,21 +343,8 @@ class ConversationStore:
                 if hasattr(part, "text") and part.text:
                     entry["parts"].append({"text": part.text})
                 elif hasattr(part, "function_call") and part.function_call:
-                    # Handle protobuf args - convert to primitive dict
-                    args_dict = {}
-                    if part.function_call.args:
-                        try:
-                            # Try to convert MapComposite/RepeatedComposite to dict
-                            for key in part.function_call.args:
-                                val = part.function_call.args[key]
-                                # Convert to primitive types
-                                if hasattr(val, '__iter__') and not isinstance(val, (str, bytes)):
-                                    args_dict[key] = list(val)
-                                else:
-                                    args_dict[key] = val
-                        except Exception:
-                            # Fallback: stringify
-                            args_dict = {"raw": str(part.function_call.args)}
+                    # Use proto_to_native for robust conversion
+                    args_dict = proto_to_native(part.function_call.args) if part.function_call.args else {}
                     
                     entry["parts"].append({
                         "function_call": {
@@ -353,16 +353,8 @@ class ConversationStore:
                         }
                     })
                 elif hasattr(part, "function_response") and part.function_response:
-                    # Handle function response - may also have protobuf types
-                    response_data = None
-                    if part.function_response.response:
-                        try:
-                            if hasattr(part.function_response.response, 'items'):
-                                response_data = dict(part.function_response.response)
-                            else:
-                                response_data = str(part.function_response.response)
-                        except Exception:
-                            response_data = str(part.function_response.response)
+                    # Use proto_to_native for robust conversion
+                    response_data = proto_to_native(part.function_response.response) if part.function_response.response else None
                     
                     entry["parts"].append({
                         "function_response": {

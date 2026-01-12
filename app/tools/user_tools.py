@@ -19,6 +19,8 @@ Function Schema Requirements:
 - Type hints required for parameters
 - Docstring becomes function description
 - Parameter descriptions from docstring
+
+FIX: Using sync PyMongo client instead of async Motor to avoid event loop conflicts
 """
 import re
 from typing import Optional, List, Dict, Any
@@ -31,14 +33,34 @@ logger = logging.getLogger(__name__)
 _user_store = None
 _product_service = None
 _db = None
+# Sync MongoDB client for tool functions (avoids async loop conflicts)
+_sync_db = None
 
 
-def set_stores(user_store=None, product_service=None, db=None):
+def proto_to_native(obj: Any) -> Any:
+    """
+    Recursively convert Gemini protobuf types to native Python types.
+    Fixes RepeatedComposite serialization errors when saving to MongoDB.
+    """
+    if obj is None:
+        return None
+    if isinstance(obj, (str, int, float, bool)):
+        return obj
+    if hasattr(obj, 'items'):  # dict-like (MapComposite)
+        return {k: proto_to_native(v) for k, v in obj.items()}
+    if hasattr(obj, '__iter__'):  # list-like (RepeatedComposite)
+        return [proto_to_native(item) for item in obj]
+    # Fallback: convert to string
+    return str(obj)
+
+
+def set_stores(user_store=None, product_service=None, db=None, sync_db=None):
     """Set store references for tools to use"""
-    global _user_store, _product_service, _db
+    global _user_store, _product_service, _db, _sync_db
     _user_store = user_store
     _product_service = product_service
     _db = db
+    _sync_db = sync_db
 
 
 # =============================================================================
@@ -61,20 +83,19 @@ def get_user_profile(user_id: str) -> dict:
     Returns:
         dict with keys: name, allergies, goals, preferences, stats
     """
-    import asyncio
+    # Use sync MongoDB client to avoid async loop conflicts
+    if _sync_db is None:
+        return {
+            "error": None,
+            "name": None,
+            "allergies": [],
+            "goals": [],
+            "preferences": {},
+            "stats": {"total_messages": 0}
+        }
 
-    async def _get():
-        if _user_store is None:
-            return {
-                "error": None,
-                "name": None,
-                "allergies": [],
-                "goals": [],
-                "preferences": {},
-                "stats": {"total_messages": 0}
-            }
-
-        user = await _user_store.get_user(user_id)
+    try:
+        user = _sync_db.users.find_one({"user_id": user_id})
         if not user:
             return {
                 "error": None,
@@ -88,22 +109,11 @@ def get_user_profile(user_id: str) -> dict:
         return {
             "error": None,
             "name": user.get("profile", {}).get("name"),
-            "allergies": user.get("profile", {}).get("allergies", []),
-            "goals": user.get("profile", {}).get("goals", []),
-            "preferences": user.get("profile", {}).get("preferences", {}),
-            "stats": user.get("stats", {})
+            "allergies": proto_to_native(user.get("profile", {}).get("allergies", [])),
+            "goals": proto_to_native(user.get("profile", {}).get("goals", [])),
+            "preferences": proto_to_native(user.get("profile", {}).get("preferences", {})),
+            "stats": proto_to_native(user.get("stats", {}))
         }
-
-    try:
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            # We're in an async context, need to handle differently
-            import concurrent.futures
-            with concurrent.futures.ThreadPoolExecutor() as pool:
-                future = pool.submit(asyncio.run, _get())
-                return future.result()
-        else:
-            return asyncio.run(_get())
     except Exception as e:
         logger.error(f"Error getting user profile: {e}")
         return {"error": str(e)}
@@ -135,30 +145,35 @@ def update_user_profile(
     Returns:
         dict with success status and updated profile
     """
-    import asyncio
+    # Use sync MongoDB client to avoid async loop conflicts
+    if _sync_db is None:
+        return {"success": False, "error": "Database not connected"}
 
-    async def _update():
-        if _user_store is None:
-            return {"success": False, "error": "Database not connected"}
-
+    try:
         profile_updates = {}
         if name is not None:
-            profile_updates["name"] = name
+            profile_updates["name"] = proto_to_native(name)
         if allergies is not None:
             # Convert Gemini protobuf list to native Python list
-            profile_updates["allergies"] = list(allergies) if hasattr(allergies, '__iter__') else [allergies]
+            profile_updates["allergies"] = proto_to_native(allergies)
         if goals is not None:
             # Convert Gemini protobuf list to native Python list
-            profile_updates["goals"] = list(goals) if hasattr(goals, '__iter__') else [goals]
+            profile_updates["goals"] = proto_to_native(goals)
         if fitness_level is not None:
-            profile_updates["fitness_level"] = fitness_level
+            profile_updates["fitness_level"] = proto_to_native(fitness_level)
 
         if not profile_updates:
             return {"success": False, "error": "No updates provided"}
 
-        result = await _user_store.create_or_update_user(
-            user_id=user_id,
-            profile_updates=profile_updates
+        # Upsert user profile
+        from datetime import datetime, timezone
+        _sync_db.users.update_one(
+            {"user_id": user_id},
+            {
+                "$set": {f"profile.{k}": v for k, v in profile_updates.items()},
+                "$setOnInsert": {"user_id": user_id, "created_at": datetime.now(timezone.utc)}
+            },
+            upsert=True
         )
 
         return {
@@ -166,16 +181,6 @@ def update_user_profile(
             "message": "პროფილი განახლდა",
             "updated_fields": list(profile_updates.keys())
         }
-
-    try:
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            import concurrent.futures
-            with concurrent.futures.ThreadPoolExecutor() as pool:
-                future = pool.submit(asyncio.run, _update())
-                return future.result()
-        else:
-            return asyncio.run(_update())
     except Exception as e:
         logger.error(f"Error updating user profile: {e}")
         return {"success": False, "error": str(e)}
@@ -209,25 +214,24 @@ def search_products(
     Returns:
         dict with products list and count
     """
-    import asyncio
+    # Use sync MongoDB client to avoid async loop conflicts
+    if _sync_db is None:
+        # Return mock data
+        return {
+            "products": [
+                {
+                    "id": "prod_001",
+                    "name": "Gold Standard Whey",
+                    "price": 159.99,
+                    "brand": "Optimum Nutrition",
+                    "in_stock": True
+                }
+            ],
+            "count": 1,
+            "query": query
+        }
 
-    async def _search():
-        if _db is None:
-            # Return mock data
-            return {
-                "products": [
-                    {
-                        "id": "prod_001",
-                        "name": "Gold Standard Whey",
-                        "price": 159.99,
-                        "brand": "Optimum Nutrition",
-                        "in_stock": True
-                    }
-                ],
-                "count": 1,
-                "query": query
-            }
-
+    try:
         # Translation map for Georgian queries
         query_map = {
             "პროტეინ": "protein",
@@ -258,7 +262,7 @@ def search_products(
         }
 
         if category:
-            mongo_query["category"] = category
+            mongo_query["category"] = proto_to_native(category)
 
         if max_price:
             mongo_query["price"] = {"$lte": max_price}
@@ -266,8 +270,8 @@ def search_products(
         if in_stock_only:
             mongo_query["in_stock"] = True
 
-        cursor = _db.products.find(mongo_query).limit(10)
-        products = await cursor.to_list(length=10)
+        # Sync query
+        products = list(_sync_db.products.find(mongo_query).limit(10))
 
         # Format results
         results = []
@@ -287,16 +291,6 @@ def search_products(
             "count": len(results),
             "query": query
         }
-
-    try:
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            import concurrent.futures
-            with concurrent.futures.ThreadPoolExecutor() as pool:
-                future = pool.submit(asyncio.run, _search())
-                return future.result()
-        else:
-            return asyncio.run(_search())
     except Exception as e:
         logger.error(f"Error searching products: {e}")
         return {"error": str(e), "products": [], "count": 0}
@@ -315,16 +309,15 @@ def get_product_details(product_id: str) -> dict:
     Returns:
         dict with full product details including description
     """
-    import asyncio
+    # Use sync MongoDB client to avoid async loop conflicts
+    if _sync_db is None:
+        return {
+            "error": "Database not connected",
+            "product": None
+        }
 
-    async def _get():
-        if _db is None:
-            return {
-                "error": "Database not connected",
-                "product": None
-            }
-
-        product = await _db.products.find_one({"id": product_id})
+    try:
+        product = _sync_db.products.find_one({"id": product_id})
 
         if not product:
             return {
@@ -347,16 +340,6 @@ def get_product_details(product_id: str) -> dict:
                 "url": product.get("product_url")
             }
         }
-
-    try:
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            import concurrent.futures
-            with concurrent.futures.ThreadPoolExecutor() as pool:
-                future = pool.submit(asyncio.run, _get())
-                return future.result()
-        else:
-            return asyncio.run(_get())
     except Exception as e:
         logger.error(f"Error getting product details: {e}")
         return {"error": str(e), "product": None}

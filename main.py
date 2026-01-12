@@ -372,10 +372,19 @@ async def lifespan(app: FastAPI):
         generation_config=GENERATION_CONFIG,
     )
 
-    # Set up tool stores
+    # Set up tool stores with sync client for avoiding async loop conflicts
+    # FIX: Gemini function calling runs sync, so we need sync MongoDB client
+    from pymongo import MongoClient
+    sync_db = None
+    if settings.mongodb_uri:
+        sync_client = MongoClient(settings.mongodb_uri)
+        sync_db = sync_client[settings.mongodb_database]
+        logger.info("Initialized sync MongoDB client for tool functions")
+    
     set_stores(
         user_store=user_store,
-        db=db_manager.db if settings.mongodb_uri else None
+        db=db_manager.db if settings.mongodb_uri else None,
+        sync_db=sync_db
     )
 
     # Initialize session manager
