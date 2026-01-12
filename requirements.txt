@@ -1,0 +1,22 @@
+# Google Generative AI SDK
+google-generativeai>=0.8.0
+
+# FastAPI & Server
+fastapi==0.109.0
+uvicorn[standard]==0.27.0
+
+# MongoDB
+motor==3.3.2
+pymongo==4.6.1
+
+# Configuration
+python-dotenv==1.0.1
+pydantic>=2.11.0
+
+# Async Support
+aiohttp==3.9.3
+
+# Optional: Google Cloud Observability (uncomment for Cloud Run)
+# opentelemetry-api>=1.20.0
+# opentelemetry-sdk>=1.20.0
+# opentelemetry-exporter-gcp-trace>=1.5.0
