@@ -388,9 +388,13 @@ class ConversationStore:
 
     def estimate_tokens(self, history: List[Dict[str, Any]]) -> int:
         """Rough token estimation (4 chars ~= 1 token)"""
-        import json
-        text = json.dumps(history)
-        return len(text) // 4
+        try:
+            import json
+            text = json.dumps(history, default=str)  # Use str() for non-serializable
+            return len(text) // 4
+        except Exception:
+            # Fallback: estimate from string representation
+            return len(str(history)) // 4
 
     # -------------------------------------------------------------------------
     # CRUD Operations
