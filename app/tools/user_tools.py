@@ -124,7 +124,9 @@ def update_user_profile(
     name: Optional[str] = None,
     allergies: Optional[List[str]] = None,
     goals: Optional[List[str]] = None,
-    fitness_level: Optional[str] = None
+    fitness_level: Optional[str] = None,
+    preferences: Optional[dict] = None,
+    dietary_restrictions: Optional[List[str]] = None
 ) -> dict:
     """
     Update user profile information.
@@ -134,6 +136,8 @@ def update_user_profile(
     - Allergy information ("ლაქტოზის აუტანლობა მაქვს")
     - Fitness goals ("მასის მომატება მინდა")
     - Experience level ("დამწყები ვარ")
+    - Dietary restrictions ("ვეგანი ვარ", "ვეგეტარიანელი ვარ")
+    - Other preferences
 
     Args:
         user_id: The unique identifier for the user
@@ -141,6 +145,8 @@ def update_user_profile(
         allergies: List of allergies like ["lactose", "gluten"] (optional)
         goals: List of goals like ["muscle_gain", "weight_loss"] (optional)
         fitness_level: One of "beginner", "intermediate", "advanced" (optional)
+        preferences: Dictionary of user preferences (optional)
+        dietary_restrictions: List like ["vegan", "vegetarian"] (optional)
 
     Returns:
         dict with success status and updated profile
@@ -161,6 +167,10 @@ def update_user_profile(
             profile_updates["goals"] = proto_to_native(goals)
         if fitness_level is not None:
             profile_updates["fitness_level"] = proto_to_native(fitness_level)
+        if preferences is not None:
+            profile_updates["preferences"] = proto_to_native(preferences)
+        if dietary_restrictions is not None:
+            profile_updates["dietary_restrictions"] = proto_to_native(dietary_restrictions)
 
         if not profile_updates:
             return {"success": False, "error": "No updates provided"}
