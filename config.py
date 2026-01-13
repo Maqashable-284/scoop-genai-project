@@ -47,6 +47,11 @@ class Settings(BaseModel):
     # Rate Limiting
     rate_limit_per_minute: int = 30
 
+    # Timeout for Gemini API calls (Gemini 3 can hang on complex queries)
+    gemini_timeout_seconds: int = Field(
+        default_factory=lambda: int(os.getenv("GEMINI_TIMEOUT_SECONDS", "60"))
+    )
+
     # CORS - Use env var for production restriction, default "*" for dev
     allowed_origins: str = Field(default_factory=lambda: os.getenv("ALLOWED_ORIGINS", "*"))
 

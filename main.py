@@ -159,23 +159,45 @@ RETRY_EXCEPTIONS = (
 )
 
 
+class GeminiTimeoutError(Exception):
+    """Raised when Gemini API call times out"""
+    pass
+
+
 async def call_with_retry(
     func,
     *args,
     max_retries: int = 4,
     base_delay: float = 2.0,
+    timeout_seconds: int = None,
     **kwargs
 ):
     """
-    ANSWER TO QUESTION #5: Retry Logic for 429 errors
+    ANSWER TO QUESTION #5: Retry Logic for 429 errors + Timeout for Gemini 3
 
     Exponential backoff: 2s, 4s, 8s, 16s
+    Timeout: Prevents infinite hang on complex queries (Gemini 3 issue)
     """
+    if timeout_seconds is None:
+        timeout_seconds = settings.gemini_timeout_seconds
+
     last_exception = None
 
     for attempt in range(max_retries):
         try:
-            return await func(*args, **kwargs)
+            # Wrap with timeout to prevent infinite hang (Gemini 3 compatibility)
+            return await asyncio.wait_for(
+                func(*args, **kwargs),
+                timeout=timeout_seconds
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                f"Gemini API timeout after {timeout_seconds}s on attempt {attempt + 1}"
+            )
+            raise GeminiTimeoutError(
+                f"Request timed out after {timeout_seconds} seconds. "
+                "Try a simpler question or break it into parts."
+            )
         except Exception as e:
             error_type = type(e).__name__
 
@@ -655,6 +677,23 @@ async def chat(request: Request, chat_request: ChatRequest):
             success=True
         )
 
+    except GeminiTimeoutError as e:
+        # Gemini 3 compatibility: Handle timeout gracefully
+        logger.warning(f"Gemini timeout for user {chat_request.user_id}: {e}")
+        return ChatResponse(
+            response_text_geo=(
+                "კითხვა ძალიან რთულია და დამუშავებას დიდი დრო სჭირდება. "
+                "გთხოვთ დაყავით რამდენიმე მარტივ კითხვად. "
+                "მაგალითად: ჯერ იკითხეთ პროტეინზე, შემდეგ კრეატინზე."
+            ),
+            quick_replies=[
+                {"title": "რომელი პროტეინი ჯობია ვეგეტარიანელისთვის?", "payload": "რომელი პროტეინი ჯობია ვეგეტარიანელისთვის?"},
+                {"title": "რა ღირს კრეატინი?", "payload": "რა ღირს კრეატინი?"},
+            ],
+            success=False,
+            error="timeout"
+        )
+
     except Exception as e:
         # Generate error ID for log correlation
         error_id = uuid.uuid4().hex[:8]
@@ -697,11 +736,22 @@ async def chat_stream(request: Request, stream_request: ChatRequest):
         try:
             session = await session_manager.get_or_create_session(stream_request.user_id)
 
-            # Stream response
-            response = await session.chat.send_message_async(
-                stream_request.message,
-                stream=True
-            )
+            # Stream response with timeout (Gemini 3 compatibility)
+            try:
+                response = await asyncio.wait_for(
+                    session.chat.send_message_async(
+                        stream_request.message,
+                        stream=True
+                    ),
+                    timeout=settings.gemini_timeout_seconds
+                )
+            except asyncio.TimeoutError:
+                logger.warning(f"Stream timeout for user {stream_request.user_id}")
+                yield (
+                    'event: error\ndata: {"error": "timeout", "message": '
+                    '"კითხვა ძალიან რთულია. გთხოვთ დაყავით მარტივ კითხვებად."}\n\n'
+                )
+                return
 
             full_text = ""
 
